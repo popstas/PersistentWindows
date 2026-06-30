@@ -217,6 +217,10 @@ namespace PersistentWindows.Common.WinApiBridge
         public const int MONITOR_DEFAULTTOPRIMARY = 1;
         public const int MONITOR_DEFAULTTONEAREST = 2;
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern bool EnumDisplayDevices(string lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+        public const uint EDD_GET_DEVICE_INTERFACE_NAME = 1;
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern IntPtr WindowFromPoint(POINT pt);
 

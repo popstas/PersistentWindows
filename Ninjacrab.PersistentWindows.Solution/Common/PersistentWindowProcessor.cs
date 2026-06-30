@@ -170,6 +170,8 @@ namespace PersistentWindows.Common
         private HashSet<IntPtr> debugWindows = new HashSet<IntPtr>();
         private HashSet<string> noinheritProcess = new HashSet<string>();
         private HashSet<IntPtr> noinheritWindows = new HashSet<IntPtr>();
+        private HashSet<string> careMonitor = new HashSet<string>(StringComparer.OrdinalIgnoreCase); //only capture/restore windows on these monitor ids (EDID/PnP id, e.g. IVM7613)
+        private Dictionary<string, string> monitorIdCache = new Dictionary<string, string>(); //adapter device name (\\.\DISPLAYn) -> short monitor id
 
         private static Dictionary<IntPtr, string> windowProcessName = new Dictionary<IntPtr, string>();
         private Process process;
@@ -1003,6 +1005,7 @@ namespace PersistentWindows.Common
                 {
                     lastDisplayChangeTime = DateTime.Now;
                     CancelRestoreTimer();
+                    monitorIdCache.Clear(); //adapter -> monitor id mapping may change after a display reconfig
                     string display_key = GetDisplayKey();
                     Log.Event("Display setting changed {0}", display_key);
 
@@ -1154,6 +1157,7 @@ namespace PersistentWindows.Common
             bool sshot_exist = SnapshotExists(curDisplayKey);
             enableRestoreSnapshotMenu(sshot_exist);
             Log.Event($"Display config is {curDisplayKey}");
+            LogMonitorIds();
             using (var persistDB = new LiteDatabase(persistDbName))
             {
                 bool db_exist = persistDB.CollectionExists(curDisplayKey);
@@ -1231,6 +1235,76 @@ namespace PersistentWindows.Common
                     s = s.Substring(0, s.Length - 4);
                 careProcess.Add(s);
             }
+        }
+
+        public void SetCareMonitor(string care_monitor)
+        {
+            string[] ms = care_monitor.Split(';');
+            foreach (var m in ms)
+            {
+                var s = m.Trim();
+                if (s.Length > 0)
+                    careMonitor.Add(s);
+            }
+        }
+
+        // Resolve the short EDID/PnP monitor id (e.g. "IVM7613") of the monitor that
+        // contains the center of rect. Returns null when the rect is off all screens.
+        private string GetMonitorId(RECT rect)
+        {
+            POINT center = new POINT(rect.Left + rect.Width / 2, rect.Top + rect.Height / 2);
+            IntPtr hMonitor = User32.MonitorFromPoint(center, User32.MONITOR_DEFAULTTONULL);
+            if (hMonitor == IntPtr.Zero)
+                return null;
+
+            MonitorInfo monitorInfo = new MonitorInfo();
+            monitorInfo.StructureSize = Marshal.SizeOf(monitorInfo);
+            if (!User32.GetMonitorInfo(hMonitor, ref monitorInfo))
+                return null;
+
+            string adapterName = monitorInfo.DeviceName; // e.g. \\.\DISPLAY1
+            if (string.IsNullOrEmpty(adapterName))
+                return null;
+
+            string monitorId;
+            if (monitorIdCache.TryGetValue(adapterName, out monitorId))
+                return monitorId;
+
+            monitorId = ResolveMonitorId(adapterName);
+            monitorIdCache[adapterName] = monitorId;
+            return monitorId;
+        }
+
+        // List each connected monitor with its short id and rect in the Event Log, so the
+        // user can discover the id to pass to -care_monitor.
+        public void LogMonitorIds()
+        {
+            int index = 0;
+            foreach (var display in Display.GetDisplays())
+            {
+                index++;
+                string monitorId = GetMonitorId(display.Position);
+                Log.Event("monitor #{0} id={1} rect={2}", index, monitorId ?? "(unknown)", display.Position.ToString());
+            }
+        }
+
+        // Map an adapter device name (\\.\DISPLAYn) to the short monitor id parsed from
+        // the monitor's PnP DeviceID. With dwFlags == 0, EnumDisplayDevices returns a
+        // DeviceID like "MONITOR\IVM7613\{4d36e96e-...}\0004", whose second segment is the
+        // short EDID/PnP id we want.
+        private string ResolveMonitorId(string adapterName)
+        {
+            DISPLAY_DEVICE dd = new DISPLAY_DEVICE();
+            dd.cb = Marshal.SizeOf(dd);
+            if (!User32.EnumDisplayDevices(adapterName, 0, ref dd, 0))
+                return null;
+
+            string deviceId = dd.DeviceID;
+            if (string.IsNullOrEmpty(deviceId))
+                return null;
+
+            string[] parts = deviceId.Split('\\');
+            return parts.Length > 1 ? parts[1] : null;
         }
 
         public void SetDebugProcess(string debug_process)
@@ -3753,6 +3827,16 @@ namespace PersistentWindows.Common
                         noinheritWindows.Add(hwnd);
                     }
                 }
+            }
+
+            if (careMonitor.Count > 0)
+            {
+                // Only track windows on the selected display(s). Do NOT add to
+                // noRestoreWindows: a window may later move onto a cared monitor and
+                // must be re-evaluated on the next capture event.
+                string monitorId = GetMonitorId(screenPosition);
+                if (monitorId == null || !careMonitor.Contains(monitorId))
+                    return false;
             }
 
             bool isFullScreen = IsFullScreen(hwnd);
