@@ -175,6 +175,7 @@ namespace PersistentWindows.Common
         private Dictionary<string, string> monitorIdCache = new Dictionary<string, string>(); //adapter device name (\\.\DISPLAYn) -> short monitor id
         private Dictionary<IntPtr, string> moveSizeStartMonitor = new Dictionary<IntPtr, string>(); //monitor id a window sat on when a user drag started (for care_monitor)
         private Dictionary<IntPtr, DateTime> pendingCareMonitorAdopt = new Dictionary<IntPtr, DateTime>(); //windows dragged onto a care_monitor, held until the adopt delay elapses
+        private HashSet<IntPtr> careMonitorAdopting = new HashSet<IntPtr>(); //windows being adopted right now: capture current position, do not inherit a previous one
 
         private static Dictionary<IntPtr, string> windowProcessName = new Dictionary<IntPtr, string>();
         private Process process;
@@ -1369,7 +1370,17 @@ namespace PersistentWindows.Common
                 return; //window left the tracked monitor during the hold; nothing to track
 
             Log.Event("start tracking window \"{0}\" on care_monitor {1}", GetWindowTitle(hwnd), monitorId);
-            CaptureWindow(hwnd, 0, DateTime.Now, curDisplayKey);
+            careMonitorAdopting.Add(hwnd);
+            try
+            {
+                // capture the position the window was dropped on, not a previously
+                // remembered/killed-window position
+                CaptureWindow(hwnd, 0, DateTime.Now, curDisplayKey);
+            }
+            finally
+            {
+                careMonitorAdopting.Remove(hwnd);
+            }
         }
 
         public void SetDebugProcess(string debug_process)
@@ -3310,7 +3321,7 @@ namespace PersistentWindows.Common
                         return false; //postpone capture till window is visible
 
                     IntPtr kid = IntPtr.Zero;
-                    if (curDisplayMetrics.IsResizable)
+                    if (curDisplayMetrics.IsResizable && !careMonitorAdopting.Contains(hWnd))
                     {
                         kid = FindMatchingKilledWindow(hWnd);
                         TryInheritWindow(hWnd, curDisplayMetrics.HWnd, kid, curDisplayMetrics);
