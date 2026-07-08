@@ -114,6 +114,7 @@ namespace PersistentWindows.Common
         // restore control
         private Timer restoreTimer;
         private Timer restoreFinishedTimer;
+        private Timer careMonitorAdoptTimer; // delays tracking of windows dragged onto a care_monitor from another monitor
         public bool restoringFromMem = false; // automatic restore from memory or snapshot
         private bool restoreSingleWindow = false;
         public bool restoringFromDB = false; // manual restore from DB
@@ -173,6 +174,7 @@ namespace PersistentWindows.Common
         private HashSet<string> careMonitor = new HashSet<string>(StringComparer.OrdinalIgnoreCase); //only capture/restore windows on these monitor ids (EDID/PnP id, e.g. IVM7613)
         private Dictionary<string, string> monitorIdCache = new Dictionary<string, string>(); //adapter device name (\\.\DISPLAYn) -> short monitor id
         private Dictionary<IntPtr, string> moveSizeStartMonitor = new Dictionary<IntPtr, string>(); //monitor id a window sat on when a user drag started (for care_monitor)
+        private Dictionary<IntPtr, DateTime> pendingCareMonitorAdopt = new Dictionary<IntPtr, DateTime>(); //windows dragged onto a care_monitor, held until the adopt delay elapses
 
         private static Dictionary<IntPtr, string> windowProcessName = new Dictionary<IntPtr, string>();
         private Process process;
@@ -907,6 +909,8 @@ namespace PersistentWindows.Common
 
             });
 
+            careMonitorAdoptTimer = new Timer(state => CareMonitorAdoptCallback());
+
             winEventsCaptureDelegate = WinEventProc;
 
             // captures new window, user click, snap and minimize
@@ -1306,6 +1310,66 @@ namespace PersistentWindows.Common
 
             string[] parts = deviceId.Split('\\');
             return parts.Length > 1 ? parts[1] : null;
+        }
+
+        // A window dragged onto a care_monitor from another monitor is held (added to
+        // noRestoreWindows) so it does not snap back. After CaptureLatency elapses this
+        // callback releases the hold and starts tracking it at the position it was
+        // dropped on, provided it is still on a tracked monitor.
+        private void CareMonitorAdoptCallback()
+        {
+            try
+            {
+                List<IntPtr> ready = new List<IntPtr>();
+                int soonestRemaining = -1;
+                DateTime now = DateTime.Now;
+
+                lock (captureLock)
+                {
+                    foreach (var entry in pendingCareMonitorAdopt)
+                    {
+                        int elapsed = (int)now.Subtract(entry.Value).TotalMilliseconds;
+                        if (elapsed >= CaptureLatency)
+                            ready.Add(entry.Key);
+                        else
+                        {
+                            int remaining = CaptureLatency - elapsed;
+                            if (soonestRemaining < 0 || remaining < soonestRemaining)
+                                soonestRemaining = remaining;
+                        }
+                    }
+
+                    foreach (var hwnd in ready)
+                        pendingCareMonitorAdopt.Remove(hwnd);
+                }
+
+                foreach (var hwnd in ready)
+                    AdoptCareMonitorWindow(hwnd);
+
+                if (soonestRemaining > 0)
+                    careMonitorAdoptTimer.Change(soonestRemaining, Timeout.Infinite);
+            }
+            catch (Exception e)
+            {
+                Log.Error(e.ToString());
+            }
+        }
+
+        private void AdoptCareMonitorWindow(IntPtr hwnd)
+        {
+            if (!User32.IsWindow(hwnd))
+                return;
+
+            noRestoreWindows.Remove(hwnd);
+
+            RECT rect = new RECT();
+            User32.GetWindowRect(hwnd, ref rect);
+            string monitorId = GetMonitorId(rect);
+            if (monitorId == null || !careMonitor.Contains(monitorId))
+                return; //window left the tracked monitor during the hold; nothing to track
+
+            Log.Event("start tracking window \"{0}\" on care_monitor {1}", GetWindowTitle(hwnd), monitorId);
+            CaptureWindow(hwnd, 0, DateTime.Now, curDisplayKey);
         }
 
         public void SetDebugProcess(string debug_process)
@@ -2328,6 +2392,8 @@ namespace PersistentWindows.Common
             if (eventType == User32Events.EVENT_OBJECT_DESTROY)
             {
                 noRestoreWindows.Remove(hwnd);
+                pendingCareMonitorAdopt.Remove(hwnd);
+                moveSizeStartMonitor.Remove(hwnd);
                 if (debugWindows.Contains(hwnd))
                 {
                     Log.Event($"kill window {windowTitle[hwnd]}");
@@ -2702,14 +2768,18 @@ namespace PersistentWindows.Common
                                     if (endOnCared && !startOnCared)
                                     {
                                         // window was dragged onto a tracked monitor from another
-                                        // monitor: ignore it so it stays where the user dropped it
-                                        // instead of being restored back to a remembered position
-                                        Log.Event("ignore window \"{0}\" dragged onto care_monitor {1} from {2}",
+                                        // monitor: hold it so it stays where the user dropped it
+                                        // instead of being restored back to a remembered position,
+                                        // then start tracking it at the dropped position after
+                                        // CaptureLatency (see CareMonitorAdoptCallback)
+                                        Log.Event("hold window \"{0}\" dragged onto care_monitor {1} from {2}",
                                             GetWindowTitle(hwnd), endMon, startMon ?? "off-screen");
                                         noRestoreWindows.Add(hwnd);
                                         if (monitorApplications.ContainsKey(curDisplayKey))
                                             monitorApplications[curDisplayKey].Remove(hwnd);
                                         allUserMoveWindows.Remove(hwnd);
+                                        pendingCareMonitorAdopt[hwnd] = DateTime.Now;
+                                        careMonitorAdoptTimer.Change(CaptureLatency, Timeout.Infinite);
                                         break;
                                     }
                                 }
