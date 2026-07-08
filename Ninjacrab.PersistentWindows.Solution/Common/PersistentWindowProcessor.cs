@@ -172,6 +172,7 @@ namespace PersistentWindows.Common
         private HashSet<IntPtr> noinheritWindows = new HashSet<IntPtr>();
         private HashSet<string> careMonitor = new HashSet<string>(StringComparer.OrdinalIgnoreCase); //only capture/restore windows on these monitor ids (EDID/PnP id, e.g. IVM7613)
         private Dictionary<string, string> monitorIdCache = new Dictionary<string, string>(); //adapter device name (\\.\DISPLAYn) -> short monitor id
+        private Dictionary<IntPtr, string> moveSizeStartMonitor = new Dictionary<IntPtr, string>(); //monitor id a window sat on when a user drag started (for care_monitor)
 
         private static Dictionary<IntPtr, string> windowProcessName = new Dictionary<IntPtr, string>();
         private Process process;
@@ -2603,6 +2604,15 @@ namespace PersistentWindows.Common
                             break;
 
                         case User32Events.EVENT_SYSTEM_MOVESIZESTART:
+                            if (careMonitor.Count > 0)
+                            {
+                                //remember which monitor the window sat on before the drag,
+                                //so MOVESIZEEND can tell if it was dragged in from another monitor
+                                RECT startRect = new RECT();
+                                User32.GetWindowRect(hwnd, ref startRect);
+                                moveSizeStartMonitor[hwnd] = GetMonitorId(startRect);
+                            }
+
                             if (freezeCapture)
                             {
                                 Log.Event($"recognize {curDisplayKey} as user session");
@@ -2674,6 +2684,34 @@ namespace PersistentWindows.Common
                                         dualPosSwitchWindows.Add(hwnd);
                                     else
                                         dualPosSwitchWindows.Remove(hwnd);
+                                }
+
+                                if (careMonitor.Count > 0)
+                                {
+                                    string startMon;
+                                    moveSizeStartMonitor.TryGetValue(hwnd, out startMon);
+                                    moveSizeStartMonitor.Remove(hwnd);
+
+                                    RECT endRect = new RECT();
+                                    User32.GetWindowRect(hwnd, ref endRect);
+                                    string endMon = GetMonitorId(endRect);
+
+                                    bool endOnCared = endMon != null && careMonitor.Contains(endMon);
+                                    bool startOnCared = startMon != null && careMonitor.Contains(startMon);
+
+                                    if (endOnCared && !startOnCared)
+                                    {
+                                        // window was dragged onto a tracked monitor from another
+                                        // monitor: ignore it so it stays where the user dropped it
+                                        // instead of being restored back to a remembered position
+                                        Log.Event("ignore window \"{0}\" dragged onto care_monitor {1} from {2}",
+                                            GetWindowTitle(hwnd), endMon, startMon ?? "off-screen");
+                                        noRestoreWindows.Add(hwnd);
+                                        if (monitorApplications.ContainsKey(curDisplayKey))
+                                            monitorApplications[curDisplayKey].Remove(hwnd);
+                                        allUserMoveWindows.Remove(hwnd);
+                                        break;
+                                    }
                                 }
                             }
 
