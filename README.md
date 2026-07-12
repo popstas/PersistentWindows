@@ -20,6 +20,7 @@ this tool and not have to worry about re-arranging when all is back to normal.
 - Webpage commander to improve the efficiency of web browsing for all major web browsers using one-letter commands like in vi editor.
 - Efficient window switching between foreground and background dual positions.
 - Pause/resume auto restore.
+- Restrict capture/restore to selected monitor(s): run with `-care_monitor "IVM7613"` to only remember and move windows located on the given display(s), identified by their short monitor id. The monitor ids are logged to the Event Viewer at startup.
 - Automatic upgrade support.
 - For more Features and Commands, take a look at the [Quick Help page](https://www.github.com/kangyu-california/PersistentWindows/blob/master/Help.md)
 

@@ -13,6 +13,7 @@
   | -capture_floating_window=0 | Disable capture floating child window and dialog window position
   | -ignore_process "notepad.exe;EXCEL" | Avoid restoring windows for notepad.exe and EXCEL.EXE processes
   | -care_process "notepad.exe;EXCEL" | Only restore windows for notepad.exe and EXCEL.EXE processes
+  | -care_monitor "IVM7613;GSM5B09" | Only capture/restore windows located on the listed monitor(s), identified by their short monitor id (EDID/PnP id). All monitor ids are written to the Event Viewer at PersistentWindows startup (Event id 9999, "monitor #n id=...")
   | -debug_process "notepad.exe;EXCEL" | Print the window positioning event logs in Event Viewer for notepad.exe and EXCEL.EXE processes. To debug all process, specify wildcard value "*"
   | -no_inherit_process "notepad.exe;EXCEL" | Disable auto restore new window for notepad and EXCEL processes
   | -foreground_background_dual_position=0 | Turn off dual position switching
